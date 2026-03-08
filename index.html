@@ -1,0 +1,601 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Care Posture Assist</title>
+<style>
+:root {
+  --safe: #00c896;
+  --warn: #f59e0b;
+  --danger: #ef4444;
+  --bg: #0f172a;
+  --surface: #1e293b;
+  --text: #f1f5f9;
+  --text-sub: #94a3b8;
+  --radius: 12px;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:var(--bg); color:var(--text); font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; overflow:hidden; height:100dvh; width:100vw; }
+
+/* ── Loading Screen ── */
+#loading { position:fixed; inset:0; z-index:100; background:var(--bg); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:16px; }
+#loading .spinner { width:48px; height:48px; border:4px solid var(--surface); border-top-color:var(--safe); border-radius:50%; animation:spin 0.8s linear infinite; }
+@keyframes spin { to { transform:rotate(360deg); } }
+#loading .status { color:var(--text-sub); font-size:14px; text-align:center; }
+#loading .error { color:var(--danger); font-size:14px; text-align:center; max-width:300px; }
+
+/* ── Setup Screen ── */
+#setup { position:fixed; inset:0; z-index:90; background:var(--bg); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:24px; padding:24px; }
+#setup h1 { font-size:22px; font-weight:700; }
+#setup p { color:var(--text-sub); font-size:14px; text-align:center; max-width:320px; }
+#setup input { width:100%; max-width:320px; padding:12px 16px; border:1px solid #334155; border-radius:var(--radius); background:var(--surface); color:var(--text); font-size:16px; outline:none; }
+#setup input:focus { border-color:var(--safe); }
+#setup button { padding:12px 32px; border:none; border-radius:var(--radius); background:var(--safe); color:#000; font-size:16px; font-weight:600; cursor:pointer; }
+#setup button:disabled { opacity:0.4; cursor:default; }
+
+/* ── App Screen ── */
+#app { display:none; position:relative; width:100%; height:100dvh; }
+#videoEl { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
+#overlay { position:absolute; inset:0; width:100%; height:100%; }
+
+/* ── HUD ── */
+.hud-top { position:absolute; top:0; left:0; right:0; padding:12px 16px; display:flex; align-items:flex-start; justify-content:space-between; z-index:10; pointer-events:none; }
+.hud-bottom { position:absolute; bottom:0; left:0; right:0; padding:16px; display:flex; align-items:center; justify-content:space-between; z-index:10; }
+
+/* Arc Gauge */
+.arc-gauge { width:80px; height:80px; position:relative; pointer-events:auto; }
+.arc-gauge svg { width:100%; height:100%; }
+.arc-gauge .arc-bg { fill:none; stroke:#334155; stroke-width:6; }
+.arc-gauge .arc-fill { fill:none; stroke:var(--safe); stroke-width:6; stroke-linecap:round; transition:stroke-dashoffset 0.15s, stroke 0.3s; }
+.arc-gauge .arc-label { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; }
+.arc-gauge .arc-value { font-size:20px; font-weight:700; line-height:1; }
+.arc-gauge .arc-unit { font-size:10px; color:var(--text-sub); }
+
+/* Neck badge */
+.neck-badge { background:rgba(0,0,0,0.6); backdrop-filter:blur(8px); padding:8px 14px; border-radius:var(--radius); text-align:center; pointer-events:auto; }
+.neck-badge .label { font-size:10px; color:var(--text-sub); }
+.neck-badge .value { font-size:18px; font-weight:700; }
+
+/* Status Pill */
+.status-pill { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); background:rgba(0,0,0,0.6); backdrop-filter:blur(8px); padding:6px 16px; border-radius:20px; font-size:13px; color:var(--text-sub); z-index:10; pointer-events:none; white-space:nowrap; }
+
+/* Trigger Progress Bar */
+.trigger-bar { position:absolute; bottom:80px; left:16px; right:16px; height:4px; background:rgba(255,255,255,0.1); border-radius:2px; z-index:10; overflow:hidden; opacity:0; transition:opacity 0.3s; }
+.trigger-bar.visible { opacity:1; }
+.trigger-bar .fill { height:100%; background:var(--danger); border-radius:2px; transition:width 0.1s; width:0; }
+
+/* HUD Buttons */
+.hud-btn { width:48px; height:48px; border:none; border-radius:50%; background:rgba(0,0,0,0.5); backdrop-filter:blur(8px); color:var(--text); font-size:20px; cursor:pointer; display:flex; align-items:center; justify-content:center; }
+.hud-btn.analyze { width:auto; padding:0 20px; border-radius:24px; font-size:14px; font-weight:600; gap:6px; background:rgba(0,200,150,0.3); border:1px solid var(--safe); }
+.hud-btn.analyze:disabled { opacity:0.4; }
+.hud-btn.analyze.analyzing { background:rgba(239,68,68,0.3); border-color:var(--danger); }
+
+/* ── BottomSheet ── */
+#bottomSheet { position:fixed; bottom:0; left:0; right:0; z-index:50; background:var(--surface); border-radius:20px 20px 0 0; transform:translateY(100%); transition:transform 0.35s cubic-bezier(0.4,0,0.2,1); max-height:60dvh; overflow-y:auto; padding:20px 20px calc(20px + env(safe-area-inset-bottom)); }
+#bottomSheet.open { transform:translateY(0); }
+.bs-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; }
+.bs-risk { display:inline-flex; align-items:center; gap:6px; padding:4px 12px; border-radius:20px; font-size:13px; font-weight:700; }
+.bs-risk.high { background:rgba(239,68,68,0.2); color:var(--danger); }
+.bs-risk.mid  { background:rgba(245,158,11,0.2); color:var(--warn); }
+.bs-risk.low  { background:rgba(0,200,150,0.2); color:var(--safe); }
+.bs-angles { font-size:12px; color:var(--text-sub); }
+.bs-summary { font-size:15px; line-height:1.6; margin-bottom:12px; }
+.bs-instructions { list-style:none; display:flex; flex-direction:column; gap:8px; margin-bottom:16px; }
+.bs-instructions li { padding:10px 12px; background:rgba(255,255,255,0.05); border-radius:8px; font-size:14px; line-height:1.5; }
+.bs-instructions li::before { content:'▸ '; color:var(--safe); }
+.bs-actions { display:flex; gap:8px; }
+.bs-btn { flex:1; padding:10px; border:none; border-radius:var(--radius); font-size:14px; font-weight:600; cursor:pointer; }
+.bs-btn.speak { background:rgba(0,200,150,0.2); color:var(--safe); }
+.bs-btn.close { background:rgba(255,255,255,0.1); color:var(--text); }
+
+/* ── Toast ── */
+#toast { position:fixed; top:16px; left:50%; transform:translateX(-50%) translateY(-100px); z-index:200; background:var(--danger); color:#fff; padding:10px 20px; border-radius:var(--radius); font-size:13px; transition:transform 0.3s; white-space:nowrap; max-width:90vw; overflow:hidden; text-overflow:ellipsis; }
+#toast.show { transform:translateX(-50%) translateY(0); }
+</style>
+</head>
+<body>
+
+<!-- Loading Screen -->
+<div id="loading">
+  <div class="spinner"></div>
+  <div class="status" id="loadingStatus">MediaPipe モデルを読み込み中…</div>
+</div>
+
+<!-- Setup Screen -->
+<div id="setup" style="display:none">
+  <h1>Care Posture Assist</h1>
+  <p>介護姿勢をリアルタイム解析し、AI が改善アドバイスを提供します。</p>
+  <input type="password" id="apiKeyInput" placeholder="Anthropic API キーを入力" autocomplete="off">
+  <button id="startBtn" disabled>開始する</button>
+</div>
+
+<!-- App Screen -->
+<div id="app">
+  <video id="videoEl" autoplay playsinline muted></video>
+  <canvas id="overlay"></canvas>
+
+  <!-- HUD Top -->
+  <div class="hud-top">
+    <div class="arc-gauge" id="arcGauge">
+      <svg viewBox="0 0 80 80">
+        <path class="arc-bg" d="M10,60 A35,35 0 1,1 70,60" />
+        <path class="arc-fill" id="arcFill" d="M10,60 A35,35 0 1,1 70,60" />
+      </svg>
+      <div class="arc-label">
+        <span class="arc-value" id="trunkValue">--</span>
+        <span class="arc-unit">体幹角</span>
+      </div>
+    </div>
+    <div class="neck-badge" id="neckBadge">
+      <div class="label">頸部角</div>
+      <div class="value" id="neckValue">--</div>
+    </div>
+  </div>
+
+  <!-- Status Pill -->
+  <div class="status-pill" id="statusPill">検出待機中</div>
+
+  <!-- Trigger Progress Bar -->
+  <div class="trigger-bar" id="triggerBar"><div class="fill" id="triggerFill"></div></div>
+
+  <!-- HUD Bottom -->
+  <div class="hud-bottom">
+    <button class="hud-btn" id="settingsBtn" title="設定">⚙</button>
+    <button class="hud-btn analyze" id="analyzeBtn" title="分析">📊 分析</button>
+    <button class="hud-btn" id="closeAppBtn" title="終了">✕</button>
+  </div>
+</div>
+
+<!-- BottomSheet -->
+<div id="bottomSheet">
+  <div class="bs-header">
+    <span class="bs-risk" id="bsRisk">--</span>
+    <span class="bs-angles" id="bsAngles"></span>
+  </div>
+  <div class="bs-summary" id="bsSummary"></div>
+  <ul class="bs-instructions" id="bsInstructions"></ul>
+  <div class="bs-actions">
+    <button class="bs-btn speak" id="bsSpeak">🔊 読み上げ</button>
+    <button class="bs-btn close" id="bsClose">閉じる</button>
+  </div>
+</div>
+
+<!-- Toast -->
+<div id="toast"></div>
+
+<script type="module">
+import { PoseLandmarker, FilesetResolver, DrawingUtils } from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs';
+
+// ── Constants ──
+const WARN_ANGLE = 30;
+const DANGER_ANGLE = 45;
+const CONSECUTIVE_FRAMES_THRESHOLD = 18;
+const LLM_COOLDOWN = 15000;
+const DETECT_INTERVAL = 66; // ~15fps
+const ARC_LEN = 160;
+
+// ── State ──
+let apiKey = '';
+let poseLandmarker = null;
+let videoEl, overlayCanvas, overlayCtx, captureCanvas, captureCtx;
+let drawingUtils;
+let isAnalyzing = false;
+let consecutiveHighFrames = 0;
+let lastLLMTime = 0;
+let lastDetectTime = 0;
+let latestAngles = { trunk: null, neck: null };
+let latestResult = null;
+let animFrameId = null;
+
+// ── DOM refs ──
+const $loading    = document.getElementById('loading');
+const $loadStatus = document.getElementById('loadingStatus');
+const $setup      = document.getElementById('setup');
+const $apiInput   = document.getElementById('apiKeyInput');
+const $startBtn   = document.getElementById('startBtn');
+const $app        = document.getElementById('app');
+const $trunkVal   = document.getElementById('trunkValue');
+const $neckVal    = document.getElementById('neckValue');
+const $arcFill    = document.getElementById('arcFill');
+const $statusPill = document.getElementById('statusPill');
+const $triggerBar = document.getElementById('triggerBar');
+const $triggerFill= document.getElementById('triggerFill');
+const $analyzeBtn = document.getElementById('analyzeBtn');
+const $bottomSheet= document.getElementById('bottomSheet');
+const $bsRisk     = document.getElementById('bsRisk');
+const $bsAngles   = document.getElementById('bsAngles');
+const $bsSummary  = document.getElementById('bsSummary');
+const $bsInstr    = document.getElementById('bsInstructions');
+const $bsSpeak    = document.getElementById('bsSpeak');
+const $bsClose    = document.getElementById('bsClose');
+const $toast      = document.getElementById('toast');
+const $settingsBtn= document.getElementById('settingsBtn');
+const $closeBtn   = document.getElementById('closeAppBtn');
+
+// ── Init MediaPipe ──
+async function init() {
+  try {
+    $loadStatus.textContent = 'MediaPipe ランタイムを準備中…';
+    const vision = await FilesetResolver.forVisionTasks(
+      'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm'
+    );
+    $loadStatus.textContent = 'Pose Landmarker モデルを読み込み中…';
+    poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
+      baseOptions: {
+        modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task',
+        delegate: 'GPU'
+      },
+      runningMode: 'VIDEO',
+      numPoses: 1
+    });
+    $loading.style.display = 'none';
+    $setup.style.display = 'flex';
+  } catch (e) {
+    $loadStatus.innerHTML = '';
+    const errEl = document.createElement('div');
+    errEl.className = 'error';
+    errEl.textContent = `MediaPipe 読み込みに失敗しました: ${e.message}`;
+    $loading.appendChild(errEl);
+  }
+}
+
+// ── Start Camera ──
+async function onStart() {
+  apiKey = $apiInput.value.trim();
+  $setup.style.display = 'none';
+  $app.style.display = 'block';
+
+  videoEl = document.getElementById('videoEl');
+  overlayCanvas = document.getElementById('overlay');
+  overlayCtx = overlayCanvas.getContext('2d');
+
+  captureCanvas = document.createElement('canvas');
+  captureCtx = captureCanvas.getContext('2d');
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
+      audio: false
+    });
+    videoEl.srcObject = stream;
+    await videoEl.play();
+
+    videoEl.addEventListener('loadeddata', () => {
+      overlayCanvas.width = videoEl.videoWidth;
+      overlayCanvas.height = videoEl.videoHeight;
+      captureCanvas.width = videoEl.videoWidth;
+      captureCanvas.height = videoEl.videoHeight;
+      drawingUtils = new DrawingUtils(overlayCtx);
+      renderLoop();
+    });
+  } catch (e) {
+    $app.style.display = 'none';
+    $loading.style.display = 'flex';
+    $loadStatus.innerHTML = '';
+    const errEl = document.createElement('div');
+    errEl.className = 'error';
+    errEl.textContent = `カメラの起動に失敗しました: ${e.message}`;
+    $loading.appendChild(errEl);
+  }
+}
+
+// ── Render Loop ──
+function renderLoop() {
+  const now = performance.now();
+
+  // Draw video to overlay
+  overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+
+  // Pose detection at ~15fps
+  if (now - lastDetectTime >= DETECT_INTERVAL && poseLandmarker) {
+    lastDetectTime = now;
+    try {
+      const result = poseLandmarker.detectForVideo(videoEl, now);
+      if (result.landmarks && result.landmarks.length > 0) {
+        const lm = result.landmarks[0];
+        // Draw skeleton
+        drawingUtils.drawLandmarks(lm, { radius: 3, color: '#00c896', fillColor: '#00c896' });
+        drawingUtils.drawConnectors(lm, PoseLandmarker.POSE_CONNECTIONS, { color: '#00c89688', lineWidth: 2 });
+
+        const angles = calcAngles(lm);
+        latestAngles = angles;
+        updateHUD(angles);
+      } else {
+        latestAngles = { trunk: null, neck: null };
+        updateHUD(latestAngles);
+      }
+    } catch (_) {
+      // silently ignore detection errors
+    }
+  }
+
+  animFrameId = requestAnimationFrame(renderLoop);
+}
+
+// ── Angle Calculation ──
+function calcAngles(lm) {
+  // Check core visibility (11,12,23,24) > 0.45
+  const coreIndices = [11, 12, 23, 24];
+  const coreVisible = coreIndices.every(i => (lm[i].visibility ?? 0) > 0.45);
+  if (!coreVisible) return { trunk: null, neck: null };
+
+  // Midpoints
+  const shoulderMid = { x: (lm[11].x + lm[12].x) / 2, y: (lm[11].y + lm[12].y) / 2 };
+  const hipMid      = { x: (lm[23].x + lm[24].x) / 2, y: (lm[23].y + lm[24].y) / 2 };
+
+  // Trunk vector (shoulder - hip)
+  const tvx = shoulderMid.x - hipMid.x;
+  const tvy = shoulderMid.y - hipMid.y;
+  const tMag = Math.sqrt(tvx * tvx + tvy * tvy);
+
+  // Trunk angle: arccos(-tvy / |trunk_vec|)
+  const trunkAngle = tMag > 0.001
+    ? Math.acos(Math.min(Math.max(-tvy / tMag, -1), 1)) * (180 / Math.PI)
+    : 0;
+
+  // Neck angle (optional)
+  let neckAngle = null;
+  const earVisible = (lm[7].visibility ?? 0) > 0.30 && (lm[8].visibility ?? 0) > 0.30;
+  if (earVisible) {
+    const earMid = { x: (lm[7].x + lm[8].x) / 2, y: (lm[7].y + lm[8].y) / 2 };
+    const nvx = earMid.x - shoulderMid.x;
+    const nvy = earMid.y - shoulderMid.y;
+    const nMag = Math.sqrt(nvx * nvx + nvy * nvy);
+    if (nMag > 0.001 && tMag > 0.001) {
+      const dot = (nvx * tvx + nvy * tvy) / (nMag * tMag);
+      neckAngle = Math.acos(Math.min(Math.max(dot, -1), 1)) * (180 / Math.PI);
+    }
+  }
+
+  return { trunk: Math.round(trunkAngle), neck: neckAngle !== null ? Math.round(neckAngle) : null };
+}
+
+// ── HUD Update ──
+function updateHUD(angles) {
+  if (angles.trunk === null) {
+    $trunkVal.textContent = '--';
+    $neckVal.textContent = '--';
+    $statusPill.textContent = '検出不可';
+    $arcFill.style.strokeDashoffset = ARC_LEN;
+    $arcFill.style.stroke = 'var(--safe)';
+    $triggerBar.classList.remove('visible');
+    return;
+  }
+
+  // Trunk value + color
+  $trunkVal.textContent = `${angles.trunk}°`;
+  let color = 'var(--safe)';
+  let statusText = '良好な姿勢';
+  if (angles.trunk >= DANGER_ANGLE) {
+    color = 'var(--danger)';
+    statusText = '危険：前傾しすぎです';
+  } else if (angles.trunk >= WARN_ANGLE) {
+    color = 'var(--warn)';
+    statusText = '注意：前傾気味です';
+  }
+  $trunkVal.style.color = color;
+  $statusPill.textContent = statusText;
+  $statusPill.style.color = color;
+
+  // Arc gauge
+  const ratio = Math.min(angles.trunk / 90, 1.0);
+  $arcFill.style.strokeDasharray = ARC_LEN;
+  $arcFill.style.strokeDashoffset = ARC_LEN * (1 - ratio);
+  $arcFill.style.stroke = color;
+
+  // Neck
+  $neckVal.textContent = angles.neck !== null ? `${angles.neck}°` : '--';
+
+  // Consecutive frame counting
+  if (angles.trunk >= DANGER_ANGLE) {
+    consecutiveHighFrames++;
+  } else if (angles.trunk < WARN_ANGLE) {
+    consecutiveHighFrames = Math.max(0, consecutiveHighFrames - 1);
+  }
+  // else: WARN_ANGLE <= trunk < DANGER_ANGLE → freeze
+
+  // Trigger progress bar
+  if (consecutiveHighFrames > 0 && angles.trunk >= WARN_ANGLE) {
+    $triggerBar.classList.add('visible');
+    const pct = Math.min(consecutiveHighFrames / CONSECUTIVE_FRAMES_THRESHOLD * 100, 100);
+    $triggerFill.style.width = `${pct}%`;
+  } else {
+    $triggerBar.classList.remove('visible');
+    $triggerFill.style.width = '0%';
+  }
+
+  // Auto trigger
+  if (
+    consecutiveHighFrames >= CONSECUTIVE_FRAMES_THRESHOLD &&
+    Date.now() - lastLLMTime >= LLM_COOLDOWN &&
+    !isAnalyzing
+  ) {
+    triggerLLM(false);
+  }
+}
+
+// ── Trigger LLM ──
+async function triggerLLM(manual) {
+  if (isAnalyzing) return;
+  isAnalyzing = true;
+  lastLLMTime = Date.now();
+  consecutiveHighFrames = 0;
+
+  $analyzeBtn.disabled = true;
+  $analyzeBtn.classList.add('analyzing');
+  $analyzeBtn.textContent = '分析中…';
+
+  try {
+    // Capture clean frame
+    captureCtx.drawImage(videoEl, 0, 0);
+    const dataUrl = captureCanvas.toDataURL('image/jpeg', 0.75);
+    const base64 = dataUrl.split(',')[1];
+
+    const angleInfo = `体幹前傾角: ${latestAngles.trunk ?? '不明'}°, 頸部屈曲角: ${latestAngles.neck ?? '不明'}°`;
+    const result = await callClaude(base64, angleInfo);
+    latestResult = result;
+    renderResult(result);
+  } catch (e) {
+    showToast(`分析エラー: ${e.message}`);
+  } finally {
+    isAnalyzing = false;
+    $analyzeBtn.disabled = false;
+    $analyzeBtn.classList.remove('analyzing');
+    $analyzeBtn.innerHTML = '📊 分析';
+  }
+}
+
+// ── Claude API ──
+async function callClaude(base64, angleInfo) {
+  const systemPrompt = `あなたは介護の姿勢分析の専門家です。
+ベッドから椅子への移乗介助場面の画像を分析し、介護者の姿勢に対するリスク評価と改善指示を提供してください。
+
+以下の計測値が提供されます:
+${angleInfo}
+
+レスポンスは以下のJSON形式のみで返してください。マークダウンや前置き文は不要です。
+体言止めは使わず、完結した文で出力してください（音声読み上げに使用するため）。
+
+{
+  "risk": "高" | "中" | "低",
+  "summary": "1〜2文の状況説明",
+  "instructions": ["具体的指示1", "具体的指示2", "具体的指示3"]
+}`;
+
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true'
+    },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 600,
+      system: systemPrompt,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: base64 } },
+          { type: 'text', text: `この画像の介護者の姿勢を分析してください。\n${angleInfo}` }
+        ]
+      }]
+    })
+  });
+
+  if (!res.ok) {
+    const errBody = await res.text();
+    throw new Error(`API ${res.status}: ${errBody.slice(0, 200)}`);
+  }
+
+  const data = await res.json();
+  const text = data.content.map(c => c.text || '').join('');
+  const match = text.match(/\{[\s\S]*\}/);
+  if (!match) throw new Error('JSON パースに失敗しました');
+
+  return JSON.parse(match[0]);
+}
+
+// ── Render Result ──
+function renderResult(r) {
+  // Risk badge
+  $bsRisk.textContent = `リスク: ${r.risk}`;
+  $bsRisk.className = 'bs-risk';
+  if (r.risk === '高') $bsRisk.classList.add('high');
+  else if (r.risk === '中') $bsRisk.classList.add('mid');
+  else $bsRisk.classList.add('low');
+
+  // Angles
+  $bsAngles.textContent = `体幹 ${latestAngles.trunk ?? '--'}° / 頸部 ${latestAngles.neck ?? '--'}°`;
+
+  // Summary
+  $bsSummary.textContent = r.summary;
+
+  // Instructions
+  $bsInstr.innerHTML = '';
+  (r.instructions || []).forEach(inst => {
+    const li = document.createElement('li');
+    li.textContent = inst;
+    $bsInstr.appendChild(li);
+  });
+
+  // Open sheet
+  $bottomSheet.classList.add('open');
+
+  // Auto TTS after 400ms
+  setTimeout(() => speak(r), 400);
+}
+
+// ── TTS ──
+function speak(r) {
+  if (!('speechSynthesis' in window)) return;
+  speechSynthesis.cancel();
+
+  const text = `${r.summary} ${r.instructions.join('。')}。`;
+  const utter = new SpeechSynthesisUtterance(text);
+  utter.lang = 'ja-JP';
+  utter.rate = 0.92;
+  utter.pitch = 1.0;
+
+  // Prefer Japanese voice
+  const voices = speechSynthesis.getVoices();
+  const jaVoice = voices.find(v => v.lang.startsWith('ja'));
+  if (jaVoice) utter.voice = jaVoice;
+
+  speechSynthesis.speak(utter);
+}
+
+// ── Toast ──
+function showToast(msg) {
+  $toast.textContent = msg;
+  $toast.classList.add('show');
+  setTimeout(() => $toast.classList.remove('show'), 5000);
+}
+
+// ── Event Listeners ──
+$apiInput.addEventListener('input', () => {
+  $startBtn.disabled = !$apiInput.value.trim();
+});
+
+$startBtn.addEventListener('click', onStart);
+
+$analyzeBtn.addEventListener('click', () => triggerLLM(true));
+
+$bsClose.addEventListener('click', () => {
+  $bottomSheet.classList.remove('open');
+  speechSynthesis.cancel();
+});
+
+$bsSpeak.addEventListener('click', () => {
+  if (latestResult) speak(latestResult);
+});
+
+$settingsBtn.addEventListener('click', () => {
+  // Return to setup screen
+  if (animFrameId) cancelAnimationFrame(animFrameId);
+  const stream = videoEl.srcObject;
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  $app.style.display = 'none';
+  $bottomSheet.classList.remove('open');
+  $setup.style.display = 'flex';
+  consecutiveHighFrames = 0;
+});
+
+$closeBtn.addEventListener('click', () => {
+  $bottomSheet.classList.remove('open');
+  speechSynthesis.cancel();
+});
+
+// Preload voices for TTS
+if ('speechSynthesis' in window) {
+  speechSynthesis.getVoices();
+  speechSynthesis.addEventListener('voiceschanged', () => speechSynthesis.getVoices());
+}
+
+// ── Boot ──
+init();
+</script>
+</body>
+</html>
